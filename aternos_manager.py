@@ -1,72 +1,92 @@
 import os
 import asyncio
+import datetime
 import requests
+import random
 from playwright.async_api import async_playwright
 
-# --- CẤU HÌNH BẢO MẬT ---
-# Code sẽ ưu tiên lấy từ GitHub Secret, nếu không có sẽ lấy từ biến cục bộ (để bạn test)
-TELEGRAM_TOKEN = os.getenv("TG_TOKEN", "8464001667:AAGTwSFaaaPxaKh56-HhJNEKTp-NV_iExTE")
-TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID", "8123911002")
-ATERNOS_URL = "https://aternos.org/server/"
+# --- CẤU HÌNH ---
+TELEGRAM_TOKEN = os.getenv("TG_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID")
+ATERNOS_SESSION = os.getenv("ATERNOS_SESSION") # Mã session bro vừa dùng thành công
+ATERNOS_URL = "https://aternos.org/servers/"
 
-# Tự động xác định môi trường chạy (GitHub hay Local)
-IS_GITHUB = "GITHUB_ACTIONS" in os.environ
-USER_DATA_DIR = "./aternos_auth"
+WORKING_HOURS = [(9, 11), (14, 16), (19, 23)]
 
-def send_telegram(message):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-        requests.post(url, data=data, timeout=10)
-    except Exception as e:
-        print(f"Lỗi gửi Telegram: {e}")
+async def apply_stealth(page):
+    await page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+    """)
+
+def is_working_time():
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    vn_now = (now_utc + datetime.timedelta(hours=7)).hour
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Giờ VN: {vn_now}h")
+    for start, end in WORKING_HOURS:
+        if start <= vn_now < end: return True
+    return False
 
 async def run_logic():
+    if not is_working_time():
+        print(">> Ngoài giờ hoạt động.")
+        return
+
     async with async_playwright() as p:
-        # Nếu chạy trên GitHub, dùng chế độ không cửa sổ (headless)
-        # Nếu chạy trên máy bạn, ban đầu để headless=False để đăng nhập
-        context = await p.chromium.launch_persistent_context(
-            USER_DATA_DIR,
-            headless=IS_GITHUB,
-            args=["--disable-blink-features=AutomationControlled"]
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         )
-        page = context.pages[0] if context.pages else await context.new_page()
+        page = await context.new_page()
+        await apply_stealth(page)
+
+        if ATERNOS_SESSION:
+            await context.add_cookies([{"name": "ATERNOS_SESSION", "value": ATERNOS_SESSION, "domain": ".aternos.org", "path": "/", "secure": True}])
         
         try:
-            print("Đang truy cập Aternos...")
-            await page.goto(ATERNOS_URL, timeout=60000)
+            print("Đang truy cập danh sách Server...")
+            await page.goto(ATERNOS_URL, wait_until="networkidle")
+            await asyncio.sleep(5)
 
-            # Kiểm tra trạng thái đăng nhập
-            if "login" in page.url:
-                if IS_GITHUB:
-                    send_telegram("⚠️ *LỖI:* GitHub Action hết hạn Session. Bạn cần chạy local để cập nhật aternos_auth!")
-                else:
-                    print("!!! VUI LÒNG ĐĂNG NHẬP TRÊN TRÌNH DUYỆT ĐANG MỞ !!!")
-                    await asyncio.sleep(120) # Chờ bạn 2 phút để đăng nhập bằng tay
+            # 1. Tìm và click vào server đầu tiên trong danh sách
+            server_entry = page.locator(".server-body")
+            if await server_entry.count() > 0:
+                print("Đã tìm thấy server, đang truy cập vào bảng điều khiển...")
+                await server_entry.first.click()
+                await asyncio.sleep(5) # Chờ chuyển trang
+            else:
+                print("Chưa thấy server nào. Bạn hãy tạo server trên web trước nhé!")
+                await page.screenshot(path="debug_screen.png")
                 return
 
-            # Xử lý bật Server
-            status_label = page.locator(".statuslabel-label")
-            await status_label.wait_for(state="visible", timeout=20000)
-            status = (await status_label.inner_text()).strip()
-            print(f"Trạng thái: {status}")
+            # 2. Kiểm tra trạng thái và bật server
+            status_locator = page.locator(".statuslabel-label")
+            if await status_locator.count() > 0:
+                status = (await status_locator.inner_text()).strip()
+                print(f"Trạng thái: {status}")
 
-            if "Offline" in status:
-                await page.click("#start")
-                # Chờ nút Confirm (EULA hoặc Queue)
-                try:
-                    confirm = page.locator("#confirm, .btn-success")
-                    await confirm.wait_for(state="visible", timeout=10000)
-                    await confirm.click()
-                    send_telegram("✅ *Aternos:* Đã bấm Start và Xác nhận hàng chờ!")
-                except:
-                    send_telegram("🚀 *Aternos:* Đang khởi động Server...")
-            
+                if "Offline" in status:
+                    print("Đang khởi động...")
+                    await page.click("#start")
+                    # Gửi thông báo Telegram tại đây...
+                    
+                    # Chờ nút xác nhận hàng chờ
+                    for _ in range(20):
+                        await asyncio.sleep(10)
+                        confirm = page.locator("#confirm, .btn-success")
+                        if await confirm.is_visible():
+                            await asyncio.sleep(random.randint(5, 10))
+                            await confirm.click()
+                            print("Đã xác nhận hàng chờ!")
+                            break
+            else:
+                print("Không tìm thấy nút Start. Check debug_screen.png")
+                await page.screenshot(path="debug_screen.png")
+
         except Exception as e:
-            send_telegram(f"❌ *Lỗi:* {str(e)[:100]}")
+            print(f"Lỗi: {e}")
         finally:
-            await context.close()
+            await browser.close()
+            print("Đã đóng Bot.")
 
 if __name__ == "__main__":
-    send_telegram("🤖 *Hệ thống khởi động:* Kiểm tra Aternos...")
     asyncio.run(run_logic())
