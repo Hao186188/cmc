@@ -31,24 +31,31 @@ def send_telegram_photo(photo_path, caption=""):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
         with open(photo_path, "rb") as photo:
             requests.post(url, files={"photo": photo}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption}, timeout=15)
-    except: pass
+        print(f"✅ Đã gửi ảnh: {photo_path}")
+    except Exception as e:
+        print(f"❌ Lỗi gửi ảnh: {e}")
 
 async def solve_cloudflare(page):
-    """Thử click vào ô Verify của Cloudflare nếu xuất hiện"""
+    print("🔎 Đang tìm ô xác minh Cloudflare...")
     try:
-        # Tìm iframe của Turnstile/Cloudflare
+        # Đợi các iframe load xong
+        await asyncio.sleep(5)
         frames = page.frames
         for frame in frames:
-            if "turnstile" in frame.url or "cloudflare" in frame.url:
-                print("🚩 Phát hiện thấy Captcha Cloudflare, đang thử click...")
-                checkbox = frame.locator('#challenge-stage, .ctp-checkbox-label')
+            if "turnstile" in frame.url or "challenge" in frame.url:
+                # Thử tìm ô checkbox trong iframe
+                checkbox = frame.locator('input[type="checkbox"], #challenge-stage, .ctp-checkbox-label')
                 if await checkbox.is_visible():
-                    await checkbox.click()
-                    return True
-        # Nếu không thấy iframe, thử click đại vào tọa độ phổ biến
-        await page.mouse.click(200, 200) 
-    except: pass
-    return False
+                    print("🎯 Thấy ô tích rồi! Đang click...")
+                    # Di chuyển chuột ngẫu nhiên trước khi click để giống người hơn
+                    box = await checkbox.bounding_box()
+                    if box:
+                        await page.mouse.move(box['x'] + random.randint(1,10), box['y'] + random.randint(1,10))
+                        await checkbox.click()
+                        return True
+        # Nếu không thấy iframe, có thể là trang bị trắng hoặc lỗi load
+        return False
+    except: return False
 
 async def run_logic():
     if not is_working_time():
@@ -56,15 +63,19 @@ async def run_logic():
         return
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        # Dùng thêm các flag để trình duyệt trông "thật" hơn
+        browser = await p.chromium.launch(headless=True, args=[
+            "--no-sandbox", 
+            "--disable-blink-features=AutomationControlled"
+        ])
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={'width': 1920, 'height': 1080}
         )
         
-        # Tiêm script ẩn danh nâng cao
-        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         page = await context.new_page()
+        # Xóa dấu vết bot
+        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         if ATERNOS_SESSION:
             await context.add_cookies([{"name": "ATERNOS_SESSION", "value": ATERNOS_SESSION, "domain": ".aternos.org", "path": "/", "secure": True}])
@@ -72,61 +83,58 @@ async def run_logic():
         try:
             print("🚀 Đang truy cập Aternos...")
             await page.goto(ATERNOS_URL, wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(15)
+
+            # --- CHỤP ẢNH KIỂM TRA ĐẦU TIÊN ---
+            await page.screenshot(path="step1_initial.png", full_page=True)
+            send_telegram_photo("step1_initial.png", "📸 Bước 1: Vừa vào trang")
+
+            # Xử lý Captcha
+            captcha_solved = await solve_cloudflare(page)
+            if captcha_solved:
+                print("✅ Đã bấm vào Captcha, đợi load...")
+                await asyncio.sleep(15)
             
-            # Chờ Cloudflare xử lý
-            await asyncio.sleep(20)
-            await solve_cloudflare(page)
+            # Kiểm tra sau khi giải Captcha
+            await page.screenshot(path="step2_after_captcha.png", full_page=True)
+
+            # QUÉT SERVER (Dùng lại danh sách selector chi tiết của bro)
+            server_selectors = [".server-body", ".server-name", "a[href*='/server/']", ".server-card"]
+            found_server = False
+            for selector in server_selectors:
+                locator = page.locator(selector).first
+                if await locator.is_visible():
+                    print(f"🎯 Thấy server qua: {selector}")
+                    await locator.click()
+                    found_server = True
+                    break
+
+            if not found_server:
+                send_telegram_photo("step2_after_captcha.png", "❌ Không thấy server. Có thể kẹt Captcha!")
+                return
+
+            # Vào trang Start
             await asyncio.sleep(10)
-
-            # Kiểm tra nếu vẫn kẹt Captcha
-            if await page.locator("iframe").count() > 0 and not await page.locator(".server-body").is_visible():
-                print("❌ Vẫn bị kẹt Captcha.")
-                await page.screenshot(path="captcha_stuck.png", full_page=True)
-                send_telegram_photo("captcha_stuck.png", "⚠️ *Bot Aternos:* Bị kẹt Captcha Cloudflare!")
-                return
-
-            # Tìm và Click Server
-            server = page.locator(".server-body, a[href*='/server/']").first
-            if await server.is_visible():
-                print("🎯 Đã thấy server, đang truy cập...")
-                await server.click()
-                await asyncio.sleep(10)
-            else:
-                print("❌ Không thấy danh sách server.")
-                await page.screenshot(path="no_server.png")
-                return
-
-            # Kiểm tra Status và Start
             status_label = page.locator(".statuslabel-label").first
             if await status_label.is_visible():
                 status = (await status_label.inner_text()).strip()
                 print(f"Trạng thái: {status}")
-
                 if "Offline" in status:
-                    print("⚡ Đang nhấn START...")
                     await page.click("#start", force=True)
-                    send_telegram("🔄 *Aternos:* Phát hiện server Offline. Đang bật lại...")
-                    
-                    # Xác nhận hàng chờ
-                    for _ in range(30):
-                        await asyncio.sleep(10)
-                        confirm = page.locator("#confirm, .btn-success")
-                        if await confirm.is_visible():
-                            await confirm.click(force=True)
-                            send_telegram("✅ *Thành công:* Đã vượt qua hàng chờ!")
-                            break
+                    send_telegram("🔄 Đang bật server...")
+                    # Chờ confirm...
                 else:
-                    print(f"Server đang {status}.")
+                    send_telegram(f"✅ Server đang {status}")
             else:
-                print("⚠️ Không thấy nút trạng thái.")
-                await page.screenshot(path="status_error.png")
+                await page.screenshot(path="step3_status_error.png")
+                send_telegram_photo("step3_status_error.png", "⚠️ Không thấy nút Start")
 
         except Exception as e:
             print(f"💥 Lỗi: {e}")
-            await page.screenshot(path="error.png")
+            await page.screenshot(path="crash_error.png")
+            send_telegram_photo("crash_error.png", f"💥 Lỗi: {str(e)}")
         finally:
             await browser.close()
-            print("🏁 Kết thúc.")
 
 if __name__ == "__main__":
     asyncio.run(run_logic())
