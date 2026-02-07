@@ -16,7 +16,7 @@ def is_working_time():
     vn_now = (now_utc + datetime.timedelta(hours=7)).hour
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Giờ VN: {vn_now}h")
     # Khung giờ làm việc (Khớp với yêu cầu của bro)
-    working_hours = [(9, 11), (14, 16), (19, 23)]
+    working_hours = [(8, 12), (14, 17), (19, 23)]
     for start, end in working_hours:
         if start <= vn_now < end: return True
     return False
