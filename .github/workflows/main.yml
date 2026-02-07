@@ -19,9 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Cài đặt các thư viện cần thiết một lần duy nhất
-          pip install playwright playwright-stealth requests
-          # Cài đặt Chromium và các dependencies hệ thống (quan trọng để tránh lỗi crash)
+          pip install playwright requests
           playwright install --with-deps chromium
 
       - name: Run Bot with Secrets
