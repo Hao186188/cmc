@@ -34,7 +34,8 @@ async def run_logic():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            viewport={'width': 1280, 'height': 720}
         )
         page = await context.new_page()
         await apply_stealth(page)
@@ -43,47 +44,53 @@ async def run_logic():
             await context.add_cookies([{"name": "ATERNOS_SESSION", "value": ATERNOS_SESSION, "domain": ".aternos.org", "path": "/", "secure": True}])
         
         try:
-            print("Đang truy cập danh sách Server...")
-            await page.goto(ATERNOS_URL, wait_until="networkidle")
-            await asyncio.sleep(5)
+            print("Đang truy cập danh sách Server (Timeout 90s)...")
+            # SỬA Ở ĐÂY: Tăng timeout và đổi sang domcontentloaded để load nhanh hơn
+            await page.goto(ATERNOS_URL, wait_until="domcontentloaded", timeout=90000)
+            
+            # Chờ thêm 15s để chắc chắn các thành phần quan trọng đã hiện ra
+            await asyncio.sleep(15)
 
-            # 1. Tìm và click vào server đầu tiên trong danh sách
+            # Kiểm tra xem có server nào không
             server_entry = page.locator(".server-body")
             if await server_entry.count() > 0:
-                print("Đã tìm thấy server, đang truy cập vào bảng điều khiển...")
+                print("Đã tìm thấy server, đang truy cập...")
                 await server_entry.first.click()
-                await asyncio.sleep(5) # Chờ chuyển trang
+                # Đợi trang chi tiết load (tăng timeout cho chắc)
+                await page.wait_for_load_state("domcontentloaded", timeout=60000)
+                await asyncio.sleep(10)
             else:
-                print("Chưa thấy server nào. Bạn hãy tạo server trên web trước nhé!")
+                print("Không tìm thấy server. Có thể do load chậm hoặc Session lỗi.")
                 await page.screenshot(path="debug_screen.png")
                 return
 
-            # 2. Kiểm tra trạng thái và bật server
+            # Kiểm tra trạng thái và nhấn Start
             status_locator = page.locator(".statuslabel-label")
             if await status_locator.count() > 0:
                 status = (await status_locator.inner_text()).strip()
                 print(f"Trạng thái: {status}")
 
                 if "Offline" in status:
-                    print("Đang khởi động...")
-                    await page.click("#start")
-                    # Gửi thông báo Telegram tại đây...
+                    print("Đang nhấn nút Start...")
+                    await page.click("#start", timeout=30000)
+                    send_telegram("🔄 *Aternos:* Bot đang khởi động lại server cho bro!")
                     
-                    # Chờ nút xác nhận hàng chờ
-                    for _ in range(20):
+                    # Chờ xác nhận hàng chờ
+                    for _ in range(30):
                         await asyncio.sleep(10)
                         confirm = page.locator("#confirm, .btn-success")
                         if await confirm.is_visible():
                             await asyncio.sleep(random.randint(5, 10))
                             await confirm.click()
-                            print("Đã xác nhận hàng chờ!")
+                            send_telegram("✅ *Thành công:* Đã vượt qua hàng chờ!")
                             break
             else:
-                print("Không tìm thấy nút Start. Check debug_screen.png")
+                print("Không tìm thấy nút Start.")
                 await page.screenshot(path="debug_screen.png")
 
         except Exception as e:
             print(f"Lỗi: {e}")
+            await page.screenshot(path="debug_screen.png")
         finally:
             await browser.close()
             print("Đã đóng Bot.")
