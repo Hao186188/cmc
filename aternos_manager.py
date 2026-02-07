@@ -4,13 +4,7 @@ import datetime
 import requests
 import random
 from playwright.async_api import async_playwright
-
-# Thử import stealth an toàn
-try:
-    from playwright_stealth import stealth_async
-    USE_STEALTH_LIB = True
-except ImportError:
-    USE_STEALTH_LIB = False
+from playwright_stealth import stealth_async
 
 # --- CẤU HÌNH ---
 TELEGRAM_TOKEN = os.getenv("TG_TOKEN")
@@ -22,16 +16,9 @@ def is_working_time():
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     vn_now = (now_utc + datetime.timedelta(hours=7)).hour
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Giờ VN: {vn_now}h")
-    # CẬP NHẬT GIỜ: (8-12), (14-17), (19-23)
+    # Khung giờ làm việc của bro
     working_hours = [(8, 12), (14, 17), (19, 23)]
     return any(start <= vn_now < end for start, end in working_hours)
-
-def send_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=10)
-    except: pass
 
 def send_telegram_photo(photo_path, caption=""):
     if not TELEGRAM_TOKEN or not os.path.exists(photo_path): return
@@ -42,99 +29,104 @@ def send_telegram_photo(photo_path, caption=""):
     except: pass
 
 async def solve_cloudflare(page):
-    print("🔎 Đang tìm ô xác minh Cloudflare...")
+    print("🔎 Đang áp dụng kỹ thuật truy quét Iframe Cloudflare...")
     try:
-        await asyncio.sleep(10) # Chờ captcha load
+        # Chờ 10s cho Captcha load hẳn
+        await asyncio.sleep(10)
+        
+        # Kỹ thuật tiền bối: Truy quét các Frame từ challenges.cloudflare.com
+        target_frame = None
         for frame in page.frames:
-            if "cloudflare" in frame.url or "turnstile" in frame.url:
-                # Selector cho ô checkbox của Cloudflare
-                checkbox = frame.locator('#challenge-stage, .ctp-checkbox-label, input[type="checkbox"]')
-                if await checkbox.count() > 0:
-                    print("🎯 Thấy ô tích rồi! Đang click giả lập...")
-                    box = await checkbox.bounding_box()
+            if "challenges.cloudflare.com" in frame.url:
+                target_frame = frame
+                break
+        
+        if target_frame:
+            print("🎯 Đã bắt được Iframe Cloudflare!")
+            # Các selector phổ biến của ô tích xanh
+            selectors = ["#challenge-stage", ".mark", "input[type='checkbox']", "#ctp-checksum-container"]
+            for s in selectors:
+                locator = target_frame.locator(s)
+                if await locator.count() > 0:
+                    print(f"✅ Đã tìm thấy nút xác minh ({s}). Đang click...")
+                    # Di chuyển chuột ngẫu nhiên để đánh lừa hệ thống
+                    box = await locator.bounding_box()
                     if box:
-                        await page.mouse.move(box['x'] + 5, box['y'] + 5)
-                    await checkbox.click()
+                        await page.mouse.move(box['x'] + random.randint(1,5), box['y'] + random.randint(1,5))
+                    await locator.click()
                     return True
         return False
-    except: return False
+    except Exception as e:
+        print(f"⚠️ Lỗi giải captcha: {e}")
+        return False
 
 async def run_logic():
     if not is_working_time():
-        print(">> Ngoài giờ hoạt động. Nghỉ ngơi thôi!")
+        print(">> Ngoài giờ hoạt động.")
         return
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        # Khởi tạo trình duyệt với các tham số ẩn danh
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
             viewport={'width': 1366, 'height': 768}
         )
+        
         page = await context.new_page()
+        # Áp dụng Stealth để xóa dấu vết bot
+        await stealth_async(page)
 
-        # Áp dụng stealth ẩn danh
-        if USE_STEALTH_LIB:
-            await stealth_async(page)
-        else:
-            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-        # Nạp Cookie Session
         if ATERNOS_SESSION:
             await context.add_cookies([{"name": "ATERNOS_SESSION", "value": ATERNOS_SESSION, "domain": ".aternos.org", "path": "/", "secure": True}])
         
         try:
             print("🚀 Đang truy cập Aternos...")
             await page.goto(ATERNOS_URL, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(15)
-
-            # Chụp ảnh check xem dính gì (Captcha hay Sign up)
-            await page.screenshot(path="debug_start.png")
             
-            # Xử lý Captcha
+            # Ảnh 1: Kiểm tra xem có dính Captcha hay không
+            await asyncio.sleep(5)
+            await page.screenshot(path="debug_1_start.png")
+            
+            # Thực thi giải Captcha
             if await solve_cloudflare(page):
-                print("✅ Đã bấm Captcha, chờ load tiếp...")
+                print("✅ Đã bấm xác minh. Đợi trang chuyển hướng...")
                 await asyncio.sleep(15)
-                await page.screenshot(path="debug_after_captcha.png")
+                await page.screenshot(path="debug_2_after_captcha.png")
+                send_telegram_photo("debug_2_after_captcha.png", "📸 Đã vượt qua bước Captcha!")
 
-            # Quét tìm Server
-            server = page.locator(".server-body, .server-name, a[href*='/server/']").first
+            # Quét server (Nếu vào được trang chủ)
+            server = page.locator(".server-body, a[href*='/server/']").first
             if await server.is_visible():
-                print("🎯 Đã thấy server, đang vào bảng điều khiển...")
+                print("🎯 Đã thấy server! Đang tiến vào...")
                 await server.click()
                 await asyncio.sleep(10)
-
-                # Kiểm tra trạng thái
+                
+                # Kiểm tra trạng thái và Start
                 status_label = page.locator(".statuslabel-label").first
                 if await status_label.is_visible():
                     status = (await status_label.inner_text()).strip()
-                    print(f"Trạng thái: {status}")
-
                     if "Offline" in status:
-                        print("⚡ Đang nhấn START...")
                         await page.click("#start", force=True)
-                        send_telegram_photo("debug_start.png", "🚀 *Aternos:* Phát hiện server Offline. Đang bật lại!")
-                        
-                        # Xác nhận hàng chờ
-                        for _ in range(25):
-                            await asyncio.sleep(10)
-                            confirm = page.locator("#confirm, .btn-success")
-                            if await confirm.is_visible():
-                                await confirm.click(force=True)
-                                send_telegram("✅ *Aternos:* Đã xác nhận hàng chờ thành công!")
-                                break
+                        await page.screenshot(path="debug_3_success.png")
+                        send_telegram_photo("debug_3_success.png", "✅ Server đang tắt. Bot đã nhấn START!")
                     else:
-                        print(f"Server đang {status}. Không can thiệp.")
+                        print(f"Server đang {status}.")
             else:
-                print("❌ Không thấy Server. Chụp ảnh báo cáo.")
-                send_telegram_photo("debug_start.png", "❌ Không thấy server. Kiểm tra lại Captcha hoặc Session!")
+                # Nếu dính trang Sign Up (như ảnh bro gửi), báo lỗi Session
+                if "signup" in page.url or await page.locator(".signup-form").is_visible():
+                    send_telegram_photo("debug_1_start.png", "⚠️ *Lỗi:* Cookie hết hạn. Bot bị đẩy ra trang Đăng ký!")
+                else:
+                    await page.screenshot(path="debug_fail.png")
+                    send_telegram_photo("debug_fail.png", "❌ *Lỗi:* Không tìm thấy server (Có thể kẹt Captcha).")
 
         except Exception as e:
-            print(f"💥 Lỗi thực thi: {e}")
-            await page.screenshot(path="debug_error.png")
-            send_telegram_photo("debug_error.png", f"💥 Lỗi bot: `{str(e)[:100]}`")
+            print(f"💥 Lỗi: {e}")
+            await page.screenshot(path="crash.png")
+            send_telegram_photo("crash.png", f"💥 Bot crash: {str(e)[:100]}")
         finally:
             await browser.close()
-            print("🏁 Kết thúc bot.")
+            print("🏁 Đã đóng trình duyệt.")
 
 if __name__ == "__main__":
     asyncio.run(run_logic())
