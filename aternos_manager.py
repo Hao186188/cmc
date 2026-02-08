@@ -29,7 +29,7 @@ def is_working_time():
     vn_now = (now_utc + datetime.timedelta(hours=7)).hour
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Giờ VN: {vn_now}h")
     # Khung giờ chạy: 9-11h, 14-16h, 19-23h
-    working_hours = [(9, 11), (14, 16), (19, 23)]
+    working_hours = [(9, 11), (14, 19), (21, 23)]
     return any(start <= vn_now < end for start, end in working_hours)
 
 def send_telegram_photo(photo_path, caption=""):
