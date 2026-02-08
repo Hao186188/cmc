@@ -6,7 +6,7 @@ on:
 
 jobs:
   run-bot:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # Thay vì ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
