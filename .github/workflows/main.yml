@@ -19,6 +19,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install --upgrade pip
+          python -m pip install playwright playwright-stealth requests
+          python -m playwright install chromium --with-deps
           playwright install --with-deps chromium
           pip install playwright playwright-stealth requests
           playwright install chromium
