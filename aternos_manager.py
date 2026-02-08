@@ -102,52 +102,63 @@ def send_tg(msg, img=None):
     except: pass
 
 async def solve_cloudflare(page):
-    """Vòng lặp giải Captcha giống phần trên, nhưng bổ sung kiểm tra server từ phần dưới"""
+    """Vòng lặp giải Captcha giống phần trên, nhưng bổ sung kiểm tra server từ phần dưới, với handle timeout"""
     print("🛡️ Đang quét Cloudflare Turnstile...")
     
     for attempt in range(1, 7):  # Thử tối đa 6 lần (khoảng 1-2 phút)
         print(f"🔄 Nỗ lực vượt Captcha lần {attempt}...")
         
-        # Chờ frame xuất hiện
-        await asyncio.sleep(7)
-        
-        # Tìm tất cả các frame để săn lùng Turnstile
-        captcha_clicked = False
-        for frame in page.frames:
-            if "challenges" in frame.url or "turnstile" in frame.url:
-                # Selector tìm ô xác minh
-                target = frame.locator('.ctp-checkbox-label, #challenge-stage, input[type="checkbox"]').first
-                box = await target.bounding_box()
-                
-                if box:
-                    # Tính toán tọa độ tâm
-                    cx = box['x'] + box['width'] / 2
-                    cy = box['y'] + box['height'] / 2
+        try:
+            # Chờ frame xuất hiện (tăng delay cho GitHub)
+            await asyncio.sleep(10)  # Tăng từ 7 lên 10
+            
+            # Tìm tất cả các frame để săn lùng Turnstile
+            captcha_clicked = False
+            for frame in page.frames:
+                if "challenges" in frame.url or "turnstile" in frame.url:
+                    # Selector tìm ô xác minh
+                    target = frame.locator('.ctp-checkbox-label, #challenge-stage, input[type="checkbox"]').first
+                    box = await target.bounding_box()
                     
-                    # Giả lập di chuyển và click bồi
-                    await page.mouse.move(cx + random.randint(-5, 5), cy + random.randint(-5, 5), steps=10)
-                    await page.mouse.click(cx, cy)
-                    await asyncio.sleep(1)
-                    await page.mouse.click(cx, cy)
-                    print(f"🎯 Đã click vào Frame tại: {cx}, {cy}")
-                    captcha_clicked = True
-                    break
-        
-        if not captcha_clicked:
-            # Fallback nếu không tìm thấy frame cụ thể, click tọa độ ước lượng
-            print("⚠️ Không tìm thấy Frame cụ thể, thử click tọa độ dự phòng...")
-            await page.mouse.click(180, 175)
+                    if box:
+                        # Tính toán tọa độ tâm
+                        cx = box['x'] + box['width'] / 2
+                        cy = box['y'] + box['height'] / 2
+                        
+                        # Giả lập di chuyển và click bồi
+                        await page.mouse.move(cx + random.randint(-5, 5), cy + random.randint(-5, 5), steps=10)
+                        await page.mouse.click(cx, cy)
+                        await asyncio.sleep(1)
+                        await page.mouse.click(cx, cy)
+                        print(f"🎯 Đã click vào Frame tại: {cx}, {cy}")
+                        captcha_clicked = True
+                        break
+            
+            if not captcha_clicked:
+                # Fallback nếu không tìm thấy frame cụ thể, click tọa độ ước lượng
+                print("⚠️ Không tìm thấy Frame cụ thể, thử click tọa độ dự phòng...")
+                await page.mouse.click(180, 175)
 
-        # Kiểm tra xem đã vào được trang server chưa (từ phần trên, bổ sung filter từ phần dưới)
-        await asyncio.sleep(10)
-        if await page.locator(".server-name").filter(has_text=SERVER_ID).is_visible(timeout=5000):
-            print("✅ Đã vượt qua Captcha thành công!")
-            return True
+            # Kiểm tra xem đã vào được trang server chưa (từ phần trên, bổ sung filter từ phần dưới)
+            # Giảm timeout để tránh conflict, và catch TimeoutError
+            await asyncio.sleep(15)  # Tăng từ 10 lên 15
+            try:
+                if await page.locator(".server-name").filter(has_text=SERVER_ID).is_visible(timeout=3000):  # Giảm từ 5000 xuống 3000
+                    print("✅ Đã vượt qua Captcha thành công!")
+                    return True
+            except Exception as e:
+                print(f"⚠️ Lỗi kiểm tra server: {e}. Tiếp tục...")
+        
+        except Exception as e:
+            print(f"⚠️ Lỗi trong attempt {attempt}: {e}. Tiếp tục...")
         
         # Nếu sau 3 lần vẫn kẹt, thử reload trang
         if attempt == 3:
             print("🔄 Vẫn kẹt Captcha, đang tải lại trang...")
-            await page.reload()
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=30000)
+            except Exception as e:
+                print(f"⚠️ Lỗi reload: {e}")
             
     return False
 
@@ -164,6 +175,7 @@ async def run():
         )
         
         page = await context.new_page()
+        page.set_default_timeout(120000)  # Tăng từ 60000 lên 120000 (2 phút) để tránh timeout
         
         if HAS_STEALTH:
             await stealth_async(page)
@@ -191,7 +203,7 @@ async def run():
 
         try:
             print("🚀 Đang truy cập Aternos...")
-            await page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+            await page.goto(URL, wait_until="domcontentloaded", timeout=120000)  # Tăng timeout goto
             
             # Bắt đầu giải Captcha
             success = await solve_cloudflare(page)
