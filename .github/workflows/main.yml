@@ -21,6 +21,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install playwright requests
           playwright install --with-deps chromium
+          pip install playwright playwright-stealth requests
+          playwright install chromium
 
       - name: Run Bot with Secrets
         env:
