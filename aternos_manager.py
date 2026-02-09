@@ -3,12 +3,13 @@ import asyncio
 import datetime
 import requests
 import random
+import re
 from playwright.async_api import async_playwright
 
 # --- CẤU HÌNH ---
-TG_TOKEN = os.getenv("TG_TOKEN",)
-TG_CHAT_ID = os.getenv("TG_CHAT_ID",)
-SESSION = os.getenv("ATERNOS_SESSION",)
+TG_TOKEN = os.getenv("TG_TOKEN", '8464001667:AAGTwSFaaaPxaKh56-HhJNEKTp-NV_iExTE')
+TG_CHAT_ID = os.getenv("TG_CHAT_ID", '8123911002')
+SESSION = os.getenv("ATERNOS_SESSION", 'UiDp6Gd7aVWGkAemTOBfPA5ho6q9eWpnglh4Nt7fSnV6xJ1GEpiAUEHen2DmmsdNRYRoNAXpmiH0XTbAVUCrFl6JY0SMP0MWHpju')
 SERVER_ID = "qtm3k14"
 URL = "https://aternos.org/servers/"
 
@@ -90,27 +91,92 @@ async def login_aternos(page, u, p, ge, gp):
         return False
 
 def send_tg(msg, img=None):
-    if not TG_TOKEN: return
+    """Gửi tin nhắn Telegram với debug"""
+    print(f"📤 Đang gửi TG: {msg[:50]}...")  # Debug: In đầu tin nhắn
+    if not TG_TOKEN:
+        print("❌ TG_TOKEN rỗng! Kiểm tra env hoặc code.")
+        return
+    if not TG_CHAT_ID:
+        print("❌ TG_CHAT_ID rỗng! Kiểm tra env hoặc code.")
+        return
     try:
         if img and os.path.exists(img):
             url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
             with open(img, "rb") as f:
-                requests.post(url, data={"chat_id": TG_CHAT_ID, "caption": msg}, files={"photo": f}, timeout=15)
+                response = requests.post(url, data={"chat_id": TG_CHAT_ID, "caption": msg}, files={"photo": f}, timeout=15)
+                print(f"✅ Gửi ảnh TG thành công: {response.status_code}")
         else:
             url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-            requests.post(url, json={"chat_id": TG_CHAT_ID, "text": msg}, timeout=15)
-    except: pass
+            response = requests.post(url, json={"chat_id": TG_CHAT_ID, "text": msg}, timeout=15)
+            print(f"✅ Gửi text TG thành công: {response.status_code}")
+    except Exception as e:
+        print(f"❌ Lỗi gửi TG: {e}")
+
+async def clear_overlays(page):
+    """Hàm dọn dẹp quảng cáo và tự động nhấn 'Continue with adblocker anyway' (cập nhật từ log: thêm class selector và retry click)"""
+    print("🧹 Đang kiểm tra Adblock detector và lớp phủ...")
+    try:
+        # 1. Nhấn 'Continue with adblocker anyway' (ưu tiên text, fallback class từ log)
+        adblock_btn = None
+        try:
+            adblock_btn = page.locator('text="Continue with adblocker anyway"').first
+            if not await adblock_btn.is_visible(timeout=2000):
+                adblock_btn = page.locator('.btn.btn-white.hBERVoexPrld').first  # Class từ log
+        except:
+            adblock_btn = page.locator('.btn.btn-white.hBERVoexPrld').first  # Fallback
+        
+        if adblock_btn and await adblock_btn.is_visible(timeout=2000):
+            for retry in range(3):  # Retry click 3 lần
+                try:
+                    await adblock_btn.click(force=True)
+                    print("🔘 Đã nhấn: Continue with adblocker anyway")
+                    break
+                except Exception as click_e:
+                    print(f"⚠️ Click fail lần {retry+1}: {click_e}")
+                    await asyncio.sleep(1)
+            await asyncio.sleep(2)
+
+        # 2. Nhấn 'OK' cho thông báo Notifications
+        notif_ok = page.locator('button:has-text("OK"), .btn-ok').first
+        if await notif_ok.is_visible(timeout=2000):
+            await notif_ok.click(force=True)
+            print("🔔 Đã nhấn: OK Notifications")
+
+        # 3. Xóa các phần tử che khuất màn hình bằng JS
+        await page.evaluate("""
+            () => {
+                const selectors = ['.modal-overlay', '.fc-ab-root', '.tp-backdrop', '.ad-slot', '.fc-dialog-container'];
+                selectors.forEach(s => document.querySelectorAll(s).forEach(el => el.remove()));
+                // Kiểm tra trước khi set style để tránh lỗi null
+                if (document.body) document.body.style.overflow = 'auto';
+                if (document.documentElement) document.documentElement.style.overflow = 'auto';
+            }
+        """)
+    except Exception as e:
+        print(f"⚠️ Lỗi khi xử lý Adblock notice: {e}")
+
+async def handle_notifications(page):
+    """Tự động nhấn OK cho bảng xin quyền thông báo"""
+    try:
+        # Tìm nút OK/Allow dựa trên text hoặc class phổ biến
+        notif_btn = page.locator('button:has-text("OK"), .btn-ok, .btn-primary:has-text("OK")').first
+        if await notif_btn.is_visible(timeout=2000):
+            await notif_btn.click(force=True)
+            print("🔔 Đã xác nhận bảng thông báo (Notifications).")
+    except:
+        pass
 
 async def solve_cloudflare(page):
-    """Vòng lặp giải Captcha với handle frame detach và tăng attempt"""
+    """Vòng lặp giải Captcha với handle frame detach và tăng attempt, bổ sung clear_overlays"""
     print("🛡️ Đang quét Cloudflare Turnstile...")
     
     for attempt in range(1, 11):  # Tăng lên 10 attempt (khoảng 5-7 phút)
         print(f"🔄 Nỗ lực vượt Captcha lần {attempt}...")
         
         try:
-            # Chờ frame xuất hiện (tăng delay)
-            await asyncio.sleep(15)  # Tăng lên 15s
+            # Trước khi giải captcha, dọn dẹp quảng cáo một lần (từ đoạn trên)
+            await clear_overlays(page)
+            await asyncio.sleep(5)
             
             # Giả lập hành vi người dùng để tránh phát hiện
             await page.mouse.move(random.randint(100, 500), random.randint(100, 500))
@@ -174,6 +240,7 @@ async def solve_cloudflare(page):
 
 async def run():
     async with async_playwright() as p:
+        # Chặn quảng cáo ở tầng Network để tiết kiệm thời gian load (từ đoạn trên)
         browser = await p.chromium.launch(headless=HEADLESS, args=[
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox"
@@ -183,6 +250,11 @@ async def run():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={'width': 1280, 'height': 720}
         )
+        
+        # --- CHIẾN THUẬT CHẶN QUẢNG CÁO TỪ GỐC (từ đoạn trên) ---
+        await context.route("**/*", lambda route: route.abort() 
+            if any(ad in route.request.url for ad in ["googleads", "doubleclick", "adnxs", "popads"]) 
+            else route.continue_())
         
         page = await context.new_page()
         page.set_default_timeout(120000)  # 2 phút
@@ -238,35 +310,82 @@ async def run():
                 server = page.locator(".server-name").filter(has_text=SERVER_ID).first
                 await server.click()
                 print("➡️ Đang vào Server...")
-                await asyncio.sleep(10)
+                await asyncio.sleep(5)
                 
-                # Xử lý các thông báo che khuất
-                await page.mouse.click(10, 10)
+                # Gọi clear_overlays liên tục vài lần vì cái bảng này có thể hiện ra trễ
+                for _ in range(3):
+                    await clear_overlays(page)
+                    await asyncio.sleep(1)
                 
-                # Kiểm tra nút Start
+                # 1. Kiểm tra và nhấn START nếu cần
                 start_btn = page.locator("#start").first
+                status_label = page.locator(".statuslabel-label")
+                
                 if await start_btn.is_visible():
-                    status = (await page.locator(".statuslabel-label").inner_text()).strip()
-                    print(f"📊 Trạng thái: {status}")
-                    
+                    status = (await status_label.inner_text()).strip()
                     if "Offline" in status:
-                        await start_btn.click()
+                        await start_btn.click(force=True)
                         print("⚡ Đã nhấn START!")
-                        send_tg(f"🚀 Server {SERVER_ID} đã được kích hoạt!", "status_after_captcha.png")
+                        await asyncio.sleep(3)
+                        await handle_notifications(page)
+
+                # 2. VÒNG LẶP THEO DÕI (Đưa ra ngoài để luôn luôn chạy)
+                print("⏳ Bắt đầu chế độ theo dõi trạng thái...")
+                last_queue_msg = ""
+                
+                while True:
+                    await clear_overlays(page)
+                    current_status = (await status_label.inner_text()).strip()
+                    
+                    # Nếu server đã Online hoặc đang load vào game
+                    if "Online" in current_status:
+                        print("🚀 Server đã Online!")
+                        send_tg(f"🚀 Server {SERVER_ID} đã Online thành công!")
+                        # Thêm vòng lặp reload mỗi 5 phút và báo cáo
+                        while True:
+                            await asyncio.sleep(300)  # Chờ 5 phút
+                            try:
+                                await page.reload(wait_until="domcontentloaded", timeout=30000)
+                                print("🔄 Đã reload trang sau 5 phút.")
+                                # Gọi clear_overlays sau reload
+                                await clear_overlays(page)
+                                # Check status và gửi TG
+                                new_status = (await status_label.inner_text()).strip()
+                                send_tg(f"📊 Báo cáo sau reload: Server {SERVER_ID} - {new_status}")
+                            except Exception as reload_e:
+                                print(f"⚠️ Lỗi reload: {reload_e}")
+                                send_tg(f"⚠️ Lỗi reload trang sau 5 phút: {str(reload_e)}")
+                        break
+                    
+                    # Nếu thấy nút Confirm (Xác nhận hàng chờ)
+                    confirm_btn = page.locator("#confirm")
+                    if await confirm_btn.is_visible():
+                        await confirm_btn.click(force=True)
+                        print("✅ ĐÃ BẤM CONFIRM HÀNG CHỜ!")
+                        await page.screenshot(path="confirmed.png")
+                        send_tg("✅ Hết hàng chờ! Đã tự động bấm CONFIRM.", "confirmed.png")
+                        # Sau khi bấm confirm không break, tiếp tục đợi nó 
+                                            # Nếu đang trong hàng chờ
+                    elif "In Queue" in current_status or "Waiting" in current_status:
+                        try:
+                            queue_time = await page.locator(".queue-time").inner_text()
+                        except:
+                            time_match = re.search(r'(\d+)\s*(minute|min|second|sec)', current_status, re.IGNORECASE)
+                            queue_time = time_match.group(0) if time_match else "Không xác định"
                         
-                        # Chờ nút Confirm hàng chờ
-                        for _ in range(15): 
-                            await asyncio.sleep(20)
-                            confirm = page.locator("#confirm")
-                            if await confirm.is_visible():
-                                await confirm.click()
-                                print("✅ Đã xác nhận hàng chờ!")
-                                send_tg("✅ Đã bấm Confirm hàng chờ!")
-                                break
-                    else:
-                        send_tg(f"✅ Server đã Online/Loading (Status: {status})")
-                else:
-                    send_tg("⚠️ Không thấy nút Start. Có thể do lỗi giao diện.", "status_after_captcha.png")
+                        msg = f"⏳ Server {SERVER_ID}: {current_status} - Còn {queue_time}"
+                        if msg != last_queue_msg:
+                            print(msg)
+                            await page.screenshot(path="queue_status.png")
+                            send_tg(msg, "queue_status.png")
+                            last_queue_msg = msg
+                    
+                    # Nếu đang Loading/Starting
+                    elif "Loading" in current_status or "Starting" in current_status:
+                        print(f"⚙️ Server đang khởi động ({current_status})...")
+                    
+                    await asyncio.sleep(45)
+
             else:
                 send_tg("❌ Thất bại: Bot không thể vượt qua Captcha sau nhiều lần thử. Khuyến nghị chạy thủ công.", "status_after_captcha.png")
                 
